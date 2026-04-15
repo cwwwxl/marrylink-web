@@ -60,7 +60,10 @@ public class OrderController {
         if (SecurityUtils.isHost()) {
             Long currentHostId = SecurityUtils.getCurrentRefId();
             wrapper.eq(Order::getHostId, currentHostId);
-        } else if (hostId != null) {
+        } else if (SecurityUtils.isCustomer()) {
+            Long currentHostId = SecurityUtils.getCurrentRefId();
+            wrapper.eq(Order::getUserId, currentHostId);
+        }else if (hostId != null) {
             // 非主持人角色可以按hostId筛选
             wrapper.eq(Order::getHostId, hostId);
         }
@@ -128,11 +131,9 @@ public class OrderController {
         Order oldOrder = orderService.getById(order.getId());
         orderService.updateById(order);
 
-        if (!oldOrder.getStatus().equals(order.getStatus())) {
-            String operator = SecurityUtils.getCurrentUsername();
-            String ip = getClientIp(request);
-            orderLogService.logOrderStatusChange(order.getOrderNo(), oldOrder.getStatus(), order.getStatus(), operator, ip);
-        }
+        String operator = SecurityUtils.getCurrentUsername();
+        String ip = getClientIp(request);
+        orderLogService.logOrderStatusChange(order.getOrderNo(), oldOrder.getStatus(), order.getStatus(), operator, ip);
 
         if (3 == order.getStatus()) {
             qsService.createQS(order);
@@ -143,17 +144,40 @@ public class OrderController {
     }
 
     @PutMapping("/{id}/status")
+    @Transactional(rollbackFor = Exception.class)
     public Result<Void> updateStatus(@PathVariable Long id, @RequestParam Integer status, HttpServletRequest request) {
         Order oldOrder = orderService.getById(id);
-        Order order = new Order();
-        order.setId(id);
-        order.setStatus(status);
-        orderService.updateById(order);
+        if (oldOrder == null) {
+            return Result.error("订单不存在");
+        }
+
+        Order updateOrder = new Order();
+        updateOrder.setId(id);
+        updateOrder.setStatus(status);
+        orderService.updateById(updateOrder);
+
+        // App端仅传状态，后续流程依赖完整订单数据，需使用旧订单补全状态
+        Order orderForQs = new Order();
+        orderForQs.setId(oldOrder.getId());
+        orderForQs.setOrderNo(oldOrder.getOrderNo());
+        orderForQs.setUserId(oldOrder.getUserId());
+        orderForQs.setUserName(oldOrder.getUserName());
+        orderForQs.setHostId(oldOrder.getHostId());
+        orderForQs.setHostName(oldOrder.getHostName());
+        orderForQs.setWeddingDate(oldOrder.getWeddingDate());
+        orderForQs.setWeddingType(oldOrder.getWeddingType());
+        orderForQs.setAmount(oldOrder.getAmount());
+        orderForQs.setStatus(status);
 
         String operator = SecurityUtils.getCurrentUsername();
         String ip = getClientIp(request);
         orderLogService.logOrderStatusChange(oldOrder.getOrderNo(), oldOrder.getStatus(), status, operator, ip);
 
+        if (3 == status) {
+            qsService.createQS(orderForQs);
+        } else if (5 == status) {
+            qsService.deleteQSByNo(orderForQs);
+        }
         return Result.ok();
     }
 
